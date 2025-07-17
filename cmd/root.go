@@ -16,46 +16,64 @@ import (
 	"github.com/spf13/viper"
 )
 
+var (
+	tags     string
+	note     string
+	filePath string
+)
+
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "devstash",
-	Short: "A CLI to save code snippets and notes to your DevStash vault.",
-	Long: `DevStash CLI allows you to quickly save text from your terminal to your personal knowledge vault.
+	Short: "A CLI to save code snippets and notes to DevStash",
+	Long: `DevStash CLI allows you to quickly save code snippets, commands, or any text
+from your terminal to your self-hosted DevStash instance via a webhook.
 
-Pipe content into it to save it:
-  cat my_script.js | devstash --tags "javascript,api"
-  history | grep docker | devstash --note "Useful docker commands"`,
+Examples:
+  # Save from a file
+  devstash --file /path/to/code.js --tags "refactor,api"
+
+  # Save from stdin
+  cat file.txt | devstash --note "A useful note"
+
+  # Configure your webhook URL
+  devstash config set webhookUrl <your-url>`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// Read from standard input
-		stat, _ := os.Stdin.Stat()
-		if (stat.Mode() & os.ModeCharDevice) != 0 {
-			fmt.Println("Usage: Pipe content into devstash. e.g., 'cat file.txt | devstash'")
-			return
-		}
+		var content []byte
+		var err error
 
-		content, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading from stdin: %v\n", err)
-			os.Exit(1)
+		// Prioritize file input if the flag is provided
+		if filePath != "" {
+			content, err = os.ReadFile(filePath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading file %s: %v\n", filePath, err)
+				os.Exit(1)
+			}
+		} else {
+			// Otherwise, check for piped input from stdin
+			stat, _ := os.Stdin.Stat()
+			if (stat.Mode() & os.ModeCharDevice) != 0 {
+				fmt.Fprintln(os.Stderr, "Usage: Provide input via --file flag or pipe. e.g., 'devstash -f file.txt' or 'cat file.txt | devstash'")
+				cmd.Help()
+				return
+			}
+			content, err = io.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading from stdin: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 		if strings.TrimSpace(string(content)) == "" {
-			fmt.Fprintln(os.Stderr, "Error: Input is empty.")
+			fmt.Fprintln(os.Stderr, "Error: Input content is empty.")
 			os.Exit(1)
 		}
 
-		// Get config values from Viper (which has read from flags, env, and file)
 		webhookURL := viper.GetString("webhookUrl")
-		authToken := viper.GetString("authToken")
-
 		if webhookURL == "" {
-			fmt.Fprintln(os.Stderr, "Error: Webhook URL is not set. Use 'devstash config set webhookUrl ...' or the --webhook-url flag.")
+			fmt.Fprintln(os.Stderr, "Error: Webhook URL is not configured. Use 'devstash config set webhookUrl <url>'")
 			os.Exit(1)
 		}
-
-		// Get flags for this command
-		tags, _ := cmd.Flags().GetString("tags")
-		note, _ := cmd.Flags().GetString("note")
 
 		// Create payload
 		type Payload struct {
@@ -74,21 +92,21 @@ Pipe content into it to save it:
 			CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 
-		jsonData, err := json.Marshal(payload)
+		payloadBytes, err := json.Marshal(payload)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating JSON payload: %v\n", err)
 			os.Exit(1)
 		}
 
-		// Send request
-		req, err := http.NewRequest("POST", webhookURL, bytes.NewBuffer(jsonData))
+		// Send to webhook
+		req, err := http.NewRequest("POST", webhookURL, bytes.NewBuffer(payloadBytes))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
 			os.Exit(1)
 		}
 
 		req.Header.Set("Content-Type", "application/json")
-		if authToken != "" {
+		if authToken := viper.GetString("authToken"); authToken != "" {
 			req.Header.Set("Authorization", authToken)
 		}
 
@@ -122,15 +140,12 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
-
 	// Local flags for the root command
 	rootCmd.Flags().String("webhook-url", "", "Webhook URL to send data to")
 	rootCmd.Flags().String("auth-token", "", "Authentication token for the webhook")
-	rootCmd.Flags().StringP("tags", "t", "", "Comma-separated tags to add to the snippet")
-	rootCmd.Flags().StringP("note", "n", "", "A note or description for the snippet")
+	rootCmd.Flags().StringVarP(&tags, "tags", "t", "", "Comma-separated tags to add to the snippet")
+	rootCmd.Flags().StringVarP(&note, "note", "n", "", "A note or description for the snippet")
+	rootCmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to a file to save as a snippet")
 
 	viper.BindPFlag("webhookUrl", rootCmd.Flags().Lookup("webhook-url"))
 	viper.BindPFlag("authToken", rootCmd.Flags().Lookup("auth-token"))
