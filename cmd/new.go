@@ -1,18 +1,12 @@
 package cmd
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var newCmd = &cobra.Command{
@@ -55,13 +49,7 @@ The snippet is saved to DevStash when you save and close the editor.`,
 		}
 
 		if strings.TrimSpace(string(content)) == "" {
-			fmt.Fprintln(os.Stderr, "Snippet is empty, aborting.")
-			os.Exit(1)
-		}
-
-		webhookURL := viper.GetString("webhookUrl")
-		if webhookURL == "" {
-			fmt.Fprintln(os.Stderr, "Error: Webhook URL is not configured. Use 'devstash config set webhookUrl <url>'")
+			fmt.Fprintln(os.Stderr, errSnippetIsEmpty)
 			os.Exit(1)
 		}
 
@@ -69,54 +57,10 @@ The snippet is saved to DevStash when you save and close the editor.`,
 		tags, _ := cmd.Flags().GetString("tags")
 		note, _ := cmd.Flags().GetString("note")
 
-		// Create and send payload
-		type Payload struct {
-			ID        string   `json:"id"`
-			Content   string   `json:"content"`
-			UserTags  []string `json:"userTags"`
-			Note      string   `json:"note,omitempty"`
-			CreatedAt string   `json:"createdAt"`
-		}
-
-		payload := Payload{
-			ID:        uuid.New().String(),
-			Content:   string(content),
-			UserTags:  parseTags(tags),
-			Note:      note,
-			CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		}
-
-		payloadBytes, err := json.Marshal(payload)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating JSON payload: %v\n", err)
+		if err := sendToWebhook(string(content), tags, note); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
-
-		req, err := http.NewRequest("POST", webhookURL, bytes.NewBuffer(payloadBytes))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
-			os.Exit(1)
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-		if authToken := viper.GetString("authToken"); authToken != "" {
-			req.Header.Set("Authorization", authToken)
-		}
-
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error sending request to webhook: %v\n", err)
-			os.Exit(1)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode >= 400 {
-			fmt.Fprintln(os.Stderr, "Error saving snippet to DevStash.")
-			os.Exit(1)
-		}
-
-		fmt.Println("Successfully saved to DevStash!")
 	},
 }
 
